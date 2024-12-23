@@ -5,28 +5,24 @@ use polars::prelude::*;
 #[allow(unused)]
 use log::{error, info, warn};
 
-use crate::utils::{file_operations::print_and_save, hashing::hash_iterable};
+use crate::utils::{file_operations::print_and_save, hashing::hash_iterable, formatting::format_size};
 
-const BYTES_TO_MB: u64 = 1024 * 1024;
-const BYTES_TO_GB: u64 = 1024 * 1024 * 1024;
 
 fn total_folder_size(df: &DataFrame) -> u64 {
     df.column("size")
         .expect("Failed to get size column")
-        .u64()
-        .expect("Failed to convert to u64")
-        .sum()
-        .expect("Failed to sum")
-        / BYTES_TO_GB
+        .sum::<u64>()
+        .unwrap_or(0)
 }
 
 fn top_n_file_sizes(df: &DataFrame, top_n: u32) -> DataFrame {
     df.clone()
         .lazy()
-        .with_columns([(col("size") / lit(BYTES_TO_MB)).alias("size (MB)")])
-        .select([col("name"), col("size (MB)"), col("extension"), col("path")])
+        .filter(col("size").is_not_null())
+        .with_columns([(col("size"))])
+        .select([col("name"), col("size"), col("extension"), col("path")])
         .sort(
-            ["size (MB)"],
+            ["size"],
             SortMultipleOptions::new().with_order_descending(true),
         )
         .limit(top_n)
@@ -37,12 +33,12 @@ fn top_n_file_sizes(df: &DataFrame, top_n: u32) -> DataFrame {
 fn file_size_per_extension(df: &DataFrame) -> DataFrame {
     df.clone()
         .lazy()
+        .filter(col("size").is_not_null())
         .group_by([col("extension")])
-        .agg([col("size").sum().alias("total_size")])
-        .with_column((col("total_size") / lit(BYTES_TO_MB)).alias("size (MB)"))
-        .select([col("extension"), col("size (MB)")])
+        .agg([col("size").sum().alias("total_size")])  // Keeping total_size as name
+        .select([col("extension"), col("total_size")])  // Select total_size not size
         .sort(
-            ["size (MB)"],
+            ["total_size"],  // Sort by total_size not size
             SortMultipleOptions::new().with_order_descending(true),
         )
         .collect()
@@ -65,12 +61,12 @@ fn extension_counts(df: &DataFrame) -> DataFrame {
 fn largest_folders(df: &DataFrame) -> DataFrame {
     df.clone()
         .lazy()
+        .filter(col("size").is_not_null())
         .group_by([col("parents")])
         .agg([col("size").sum().alias("total_size")])
-        .with_column((col("total_size") / lit(BYTES_TO_MB)).alias("size (MB)"))
-        .select([col("parents"), col("size (MB)")])
+        .select([col("parents"), col("total_size")])  // Select total_size not size
         .sort(
-            ["size (MB)"],
+            ["total_size"],  // Sort by total_size not size
             SortMultipleOptions::new().with_order_descending(true),
         )
         .collect()
@@ -94,11 +90,11 @@ fn overall_hash(df: &DataFrame) -> String {
 
 /// Some simple analysis options. Fun way to explore Polars.
 pub fn run_analysis(df: DataFrame, analysis_folder_path: &Path, get_hash: bool) {
-    let total_folder_size: u64 = total_folder_size(&df);
+    let total_folder_size = total_folder_size(&df);
 
     let top_n = 100;
 
-    info!("Total folder size: {} GB", total_folder_size);
+    info!("Total folder size: {}", format_size(total_folder_size));
 
     print_and_save(
         &mut top_n_file_sizes(&df, top_n),
